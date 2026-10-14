@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">YT Ad Skipper</string>
+    <string name="service_label">YT Ad Skipper</string>
+    <string name="service_description">Watches the YouTube app only and taps the \"Skip\" button on ads as soon as it appears. It does not read or store anything else.</string>
+</resources>
