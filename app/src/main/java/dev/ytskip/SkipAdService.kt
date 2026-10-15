@@ -55,7 +55,7 @@ class SkipAdService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.packageName?.toString() != YT_PACKAGE) return
+        if (event == null || event.packageName?.toString() != YT_PACKAGE) return
 
         val now = SystemClock.uptimeMillis()
         if (now - lastSeenWriteAt > 2_000) {
@@ -64,7 +64,15 @@ class SkipAdService : AccessibilityService() {
         }
         if (now - lastSkipAt < COOLDOWN_MS) return
 
-        for (root in youtubeRoots()) {
+        val roots = youtubeRoots(event)
+        if (roots.isEmpty()) {
+            if (now - lastDumpAt > 10_000) {
+                lastDumpAt = now
+                Diagnostics.saveNoScreen(this, describeWindows(event))
+            }
+            return
+        }
+        for (root in roots) {
             var button = findSkipButtonFast(root)
             val adShowing = button != null || isAdShowing(root)
             if (button == null && adShowing) button = findSkipButtonDeep(root)
@@ -91,14 +99,70 @@ class SkipAdService : AccessibilityService() {
 
     // ---- where to look -------------------------------------------------------
 
-    private fun youtubeRoots(): List<AccessibilityNodeInfo> {
-        val roots = try {
-            windows.mapNotNull { it.root }.filter { it.packageName?.toString() == YT_PACKAGE }
-        } catch (_: Exception) {
-            emptyList()
+    /**
+     * YouTube's screen, found three ways. The event's own source is the most
+     * reliable: on Xiaomi the floating accessibility menu can be the "active
+     * window", hiding YouTube from rootInActiveWindow.
+     */
+    private fun youtubeRoots(event: AccessibilityEvent): List<AccessibilityNodeInfo> {
+        val out = ArrayList<AccessibilityNodeInfo>()
+        fun addIfYoutube(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            val pkg = n.packageName?.toString()
+            if ((pkg == null || pkg == YT_PACKAGE) && out.none { it == n }) out.add(n)
         }
-        if (roots.isNotEmpty()) return roots
-        return listOfNotNull(rootInActiveWindow?.takeIf { it.packageName?.toString() == YT_PACKAGE })
+        // 1. Climb from the node that fired the event to the top of its window.
+        try {
+            var n = event.source
+            var hops = 0
+            while (n != null && hops < 200) {
+                val p = n.parent ?: break
+                n = p
+                hops++
+            }
+            n?.let { top -> if (top.packageName?.toString() == YT_PACKAGE) out.add(top) }
+        } catch (_: Exception) { }
+        // 2. Every on-screen window that belongs to YouTube.
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                if (r.packageName?.toString() == YT_PACKAGE) addIfYoutube(r)
+            }
+        } catch (_: Exception) { }
+        // 3. The focused window.
+        try {
+            rootInActiveWindow?.takeIf { it.packageName?.toString() == YT_PACKAGE }?.let { addIfYoutube(it) }
+        } catch (_: Exception) { }
+        return out
+    }
+
+    /** Short report of what the system gave us, for when no YouTube screen was found. */
+    private fun describeWindows(event: AccessibilityEvent): String {
+        val sb = StringBuilder()
+        sb.append("evento: tipo=").append(event.eventType)
+            .append(" pkg=").append(event.packageName)
+            .append(" clase=").append(event.className)
+            .append(" source=").append(if (event.source == null) "null" else event.source?.packageName)
+            .append('\n')
+        sb.append("rootInActiveWindow: ")
+            .append(try { rootInActiveWindow?.packageName ?: "null" } catch (e: Exception) { "error " + e.message })
+            .append('\n')
+        try {
+            val ws = windows
+            sb.append("ventanas: ").append(ws.size).append('\n')
+            for (w in ws) {
+                sb.append("  tipo=").append(w.type)
+                    .append(" capa=").append(w.layer)
+                    .append(" activa=").append(w.isActive)
+                    .append(" foco=").append(w.isFocused)
+                    .append(" raíz=").append(try { w.root?.packageName ?: "null" } catch (e: Exception) { "error" })
+                if (android.os.Build.VERSION.SDK_INT >= 24) sb.append(" título=").append(w.title)
+                sb.append('\n')
+            }
+        } catch (e: Exception) {
+            sb.append("ventanas: error ").append(e.message).append('\n')
+        }
+        return sb.toString()
     }
 
     private fun isAdShowing(root: AccessibilityNodeInfo): Boolean =

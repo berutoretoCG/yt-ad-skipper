@@ -47,6 +47,17 @@ object Diagnostics {
         }
     }
 
+    /** When the service hears YouTube but can't read its screen. */
+    fun saveNoScreen(ctx: Context, report: String) {
+        try {
+            val head = "YT Ad Skipper " + appVersion(ctx) + " | YouTube " + youtubeVersion(ctx) +
+                " | Android " + Build.VERSION.RELEASE + " | " + Build.MANUFACTURER + " " + Build.MODEL + "\n" +
+                SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()) +
+                " | NO SE PUDO LEER LA PANTALLA DE YOUTUBE\n\n"
+            file(ctx).writeText(head + report)
+        } catch (_: Exception) { }
+    }
+
     private fun describe(n: AccessibilityNodeInfo): String {
         val r = Rect().also { n.getBoundsInScreen(it) }
         val parts = mutableListOf(n.className?.toString()?.substringAfterLast('.') ?: "?")
