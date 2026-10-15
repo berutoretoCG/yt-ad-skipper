@@ -73,9 +73,9 @@ class SkipAdService : AccessibilityService() {
             return
         }
         for (root in roots) {
-            var button = findSkipButtonFast(root)
-            val adShowing = button != null || isAdShowing(root)
-            if (button == null && adShowing) button = findSkipButtonDeep(root)
+            val scan = scanPlayer(root)
+            val button = scan.button
+            val adShowing = scan.adShowing || button != null
 
             if (adShowing) Prefs.markAdSeen(this)
             if (adShowing && now - lastDumpAt > DUMP_INTERVAL_MS) {
@@ -165,47 +165,52 @@ class SkipAdService : AccessibilityService() {
         return sb.toString()
     }
 
-    private fun isAdShowing(root: AccessibilityNodeInfo): Boolean =
-        AD_MARKERS.any { marker ->
-            root.findAccessibilityNodeInfosByText(marker).any { it.isVisibleToUser }
-        }
+    private class Scan(val adShowing: Boolean, val button: AccessibilityNodeInfo?)
 
-    // ---- finding the button --------------------------------------------------
-
-    private fun findSkipButtonFast(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    /**
+     * YouTube draws most of its UI with virtual views that Android's text search
+     * can't see, so we walk the player ourselves. Only the player is walked
+     * (~50 nodes), which keeps it cheap enough to do on every event.
+     */
+    private fun scanPlayer(root: AccessibilityNodeInfo): Scan {
+        // Fast path: real skip-button views, if YouTube still uses them.
         for (id in SKIP_VIEW_IDS) {
             root.findAccessibilityNodeInfosByViewId("$YT_PACKAGE:id/$id")
                 .firstOrNull { it.isVisibleToUser && !subtreeHasDigits(it) }
-                ?.let { return it }
+                ?.let { return Scan(true, it) }
         }
-        for (word in SEARCH_WORDS) {
-            root.findAccessibilityNodeInfosByText(word)
-                .firstOrNull { it.isVisibleToUser && label(it) in SKIP_LABELS }
-                ?.let { return it }
-        }
-        return null
-    }
 
-    /** Only runs while an ad is on screen. Prefers clickable matches. */
-    private fun findSkipButtonDeep(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val matches = ArrayList<AccessibilityNodeInfo>()
+        val player = PLAYER_IDS.firstNotNullOfOrNull { id ->
+            root.findAccessibilityNodeInfosByViewId("$YT_PACKAGE:id/$id").firstOrNull { it.isVisibleToUser }
+        } ?: root
+
+        var ad = false
+        val candidates = ArrayList<AccessibilityNodeInfo>()
         var budget = MAX_NODES
         fun walk(n: AccessibilityNodeInfo?, depth: Int) {
             if (n == null || depth > MAX_DEPTH || budget-- <= 0) return
-            if (n.isVisibleToUser && looksLikeSkip(n)) matches.add(n)
+            val vid = n.viewIdResourceName ?: ""
+            if (n.isVisibleToUser && "subtitle" !in vid && "caption" !in vid) {
+                val l = label(n)
+                if (l != null && AD_MARKERS.any { it in l }) ad = true
+                if (looksLikeSkip(n, l)) candidates.add(n)
+            }
             for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
         }
-        walk(root, 0)
-        return matches.firstOrNull { it.isClickable } ?: matches.firstOrNull()
+        walk(player, 0)
+        // A label match only counts while an ad is on screen; a "skip" view ID always counts.
+        val usable = if (ad) candidates else candidates.filter {
+            "skip" in (it.viewIdResourceName?.lowercase() ?: "")
+        }
+        val button = usable.firstOrNull { it.isClickable } ?: usable.firstOrNull()
+        return Scan(ad, button)
     }
 
-    private fun looksLikeSkip(n: AccessibilityNodeInfo): Boolean {
-        if (subtreeHasDigits(n)) return false
+    private fun looksLikeSkip(n: AccessibilityNodeInfo, l: String?): Boolean {
         val id = n.viewIdResourceName?.lowercase() ?: ""
-        if ("skip" in id && "preview" !in id) return true
-        val l = label(n) ?: return false
-        if (l.length > 40) return false
-        return l in SKIP_LABELS || SKIP_PREFIXES.any { l.startsWith(it) }
+        if ("skip" in id && "preview" !in id) return !subtreeHasDigits(n)
+        if (l == null || l.length > 40 || l.any { it.isDigit() }) return false
+        return SKIP_WORDS.any { it in l }
     }
 
     private fun label(node: AccessibilityNodeInfo): String? =
@@ -271,28 +276,17 @@ class SkipAdService : AccessibilityService() {
             "skip_ad_button_container",
         )
 
-        /** Visible texts that mean "an ad is playing". */
+        /** The video player; only this part of the screen is scanned. */
+        private val PLAYER_IDS = listOf("watch_player", "player_view", "player_fragment_container")
+
+        /** Lower-case fragments of player texts that mean "an ad is playing". */
         private val AD_MARKERS = listOf(
-            "Patrocinado", "Sponsored", "anunciante", "advertiser",
-            "Sponsorisé", "Gesponsert", "Sponsorizzato",
+            "patrocinado", "anunciante", "sponsored", "advertiser",
+            "sponsorisé", "gesponsert", "sponsorizzato",
         )
 
-        private val SEARCH_WORDS = listOf(
-            "Saltar", "Omitir", "Skip", "Ignorer", "Überspringen", "Salta", "Pular",
-        )
-
-        private val SKIP_LABELS = setOf(
-            "saltar", "saltar anuncio", "saltar anuncios",
-            "omitir", "omitir anuncio", "omitir anuncios",
-            "skip", "skip ad", "skip ads",
-            "ignorer", "ignorer l'annonce", "ignorer les annonces",
-            "überspringen", "werbung überspringen",
-            "salta", "salta annuncio", "salta annunci",
-            "pular", "pular anúncio", "pular anúncios",
-        )
-
-        /** Looser match, only used while an ad is on screen. */
-        private val SKIP_PREFIXES = listOf(
+        /** Lower-case fragments of the skip button's label/description. */
+        private val SKIP_WORDS = listOf(
             "saltar", "omitir", "skip", "ignorer", "überspringen", "salta ", "pular",
         )
     }

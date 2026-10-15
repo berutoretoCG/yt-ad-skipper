@@ -11,8 +11,8 @@ android {
         applicationId = "dev.ytskip"
         minSdk = 24          // gestures, Quick Settings tile and disableSelf need API 24+
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     // Fixed key committed to the repo, so every APK built by GitHub has the same
