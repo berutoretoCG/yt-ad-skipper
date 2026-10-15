@@ -9,7 +9,10 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.os.Build
+import android.database.ContentObserver
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.format.DateUtils
 import android.view.Gravity
@@ -85,6 +88,8 @@ class MainActivity : Activity() {
                 • El botón "Saltar anuncios" en Ajustes rápidos: iluminado = activado. Tócalo para apagarlo o encenderlo.
                 • Al encenderlo o apagarlo sale un aviso en pantalla.
 
+                El botón ⏭ del menú flotante de accesibilidad sirve para SALTAR AHORA el anuncio (ya no apaga la app). Si un anuncio no se salta solo, púlsalo: además guarda un diagnóstico de ese momento.
+
                 Para activarlo: Ajustes de Accesibilidad → Apps instaladas / descargadas → YT Ad Skipper.
                 Si el interruptor sale gris: Ajustes → Aplicaciones → YT Ad Skipper → ⋮ → Permitir ajustes restringidos.
 
@@ -108,9 +113,29 @@ class MainActivity : Activity() {
         setContentView(ScrollView(this).apply { addView(column) })
     }
 
+    private val handler = Handler(Looper.getMainLooper())
+    private val ticker = object : Runnable {
+        override fun run() {
+            refresh()
+            handler.postDelayed(this, 1_000)
+        }
+    }
+    private val settingsObserver = object : ContentObserver(handler) {
+        override fun onChange(selfChange: Boolean) = refresh()
+    }
+
     override fun onResume() {
         super.onResume()
-        refresh()
+        contentResolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES), false, settingsObserver
+        )
+        handler.post(ticker)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        contentResolver.unregisterContentObserver(settingsObserver)
+        handler.removeCallbacks(ticker)
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
@@ -120,7 +145,7 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
-        val on = StatusUi.isEnabled(this)
+        val on = SkipAdService.instance != null || StatusUi.isEnabled(this)
         status.text = if (on) "✅ ACTIVADO" else "⛔ DESACTIVADO"
         status.setBackgroundColor(if (on) Color.rgb(46, 125, 50) else Color.rgb(198, 40, 40))
         toggle.text = if (on) "Desactivar" else "Activar (abre Accesibilidad)"

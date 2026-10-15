@@ -1,14 +1,17 @@
 package dev.ytskip
 
+import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Toast
 
 /**
  * Listens to the YouTube app's UI and taps the skip button on ads.
@@ -29,11 +32,72 @@ class SkipAdService : AccessibilityService() {
     private var lastAdDumpAt = 0L
     private var lastSeenWriteAt = 0L
 
+    private var buttonCallback: Any? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         StatusUi.onStateChanged(this, true)
+        registerSkipNowButton()
     }
+
+    /**
+     * The floating accessibility button / shortcut becomes "skip now" instead of
+     * switching the service on and off.
+     */
+    private fun registerSkipNowButton() {
+        if (Build.VERSION.SDK_INT < 26) return
+        val cb = object : AccessibilityButtonController.AccessibilityButtonCallback() {
+            override fun onClicked(controller: AccessibilityButtonController) = skipNow()
+        }
+        accessibilityButtonController.registerAccessibilityButtonCallback(cb)
+        buttonCallback = cb
+    }
+
+    /** Manual skip: always saves a diagnostic, so a press during an ad captures the button. */
+    private fun skipNow() {
+        val roots = youtubeRoots(null)
+        if (roots.isEmpty()) {
+            toast("Abre un vídeo de YouTube primero")
+            return
+        }
+        for (root in roots) {
+            val scan = scanPlayer(root)
+            Diagnostics.save(this, root, scan.button, adShowing = scan.adShowing, manual = true)
+            if (scan.adShowing) Prefs.markAdSeen(this)
+            if (scan.button != null && press(scan.button)) {
+                recordSkip()
+                toast("Anuncio saltado ✅")
+                return
+            }
+            if (scan.adShowing && tapGuessedSkipSpot(root)) {
+                recordSkip()
+                toast("Anuncio detectado: he pulsado donde suele estar ⏭ (diagnóstico guardado)")
+                return
+            }
+        }
+        toast("No veo ningún anuncio ahora mismo (diagnóstico guardado)")
+    }
+
+    /** YouTube's icon-only ⏭ sits at the right of the player, ~68% down. Manual use only. */
+    private fun tapGuessedSkipSpot(root: AccessibilityNodeInfo): Boolean {
+        val player = PLAYER_IDS.firstNotNullOfOrNull { id ->
+            root.findAccessibilityNodeInfosByViewId("$YT_PACKAGE:id/$id").firstOrNull { it.isVisibleToUser }
+        } ?: return false
+        val r = bounds(player)
+        if (r.isEmpty) return false
+        val x = r.left + r.width() * 0.934f
+        val y = r.top + r.height() * 0.677f
+        return tapAt(Rect(x.toInt() - 4, y.toInt() - 4, x.toInt() + 4, y.toInt() + 4))
+    }
+
+    private fun recordSkip() {
+        lastSkipAt = SystemClock.uptimeMillis()
+        Prefs.recordSkip(this)
+        StatusUi.showNotification(this)
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     override fun onUnbind(intent: Intent?): Boolean {
         stopped()
@@ -46,6 +110,12 @@ class SkipAdService : AccessibilityService() {
     }
 
     private fun stopped() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            (buttonCallback as? AccessibilityButtonController.AccessibilityButtonCallback)?.let {
+                try { accessibilityButtonController.unregisterAccessibilityButtonCallback(it) } catch (_: Exception) { }
+            }
+            buttonCallback = null
+        }
         if (instance === this) {
             instance = null
             StatusUi.onStateChanged(this, false)
@@ -88,9 +158,7 @@ class SkipAdService : AccessibilityService() {
                 Diagnostics.save(this, root, null, adShowing = false)
             }
             if (button != null && press(button)) {
-                lastSkipAt = now
-                Prefs.recordSkip(this)
-                StatusUi.showNotification(this)
+                recordSkip()
                 Log.d(TAG, "Ad skipped")
                 return
             }
@@ -104,7 +172,7 @@ class SkipAdService : AccessibilityService() {
      * reliable: on Xiaomi the floating accessibility menu can be the "active
      * window", hiding YouTube from rootInActiveWindow.
      */
-    private fun youtubeRoots(event: AccessibilityEvent): List<AccessibilityNodeInfo> {
+    private fun youtubeRoots(event: AccessibilityEvent?): List<AccessibilityNodeInfo> {
         val out = ArrayList<AccessibilityNodeInfo>()
         fun addIfYoutube(n: AccessibilityNodeInfo?) {
             if (n == null) return
@@ -113,7 +181,7 @@ class SkipAdService : AccessibilityService() {
         }
         // 1. Climb from the node that fired the event to the top of its window.
         try {
-            var n = event.source
+            var n = event?.source
             var hops = 0
             while (n != null && hops < 200) {
                 val p = n.parent ?: break

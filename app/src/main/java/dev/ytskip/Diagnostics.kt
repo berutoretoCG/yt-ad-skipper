@@ -20,7 +20,7 @@ object Diagnostics {
 
     fun file(ctx: Context) = File(ctx.filesDir, FILE)
 
-    fun save(ctx: Context, root: AccessibilityNodeInfo, found: AccessibilityNodeInfo?, adShowing: Boolean) {
+    fun save(ctx: Context, root: AccessibilityNodeInfo, found: AccessibilityNodeInfo?, adShowing: Boolean, manual: Boolean = false) {
         try {
             val sb = StringBuilder()
             sb.append("YT Ad Skipper ").append(appVersion(ctx))
@@ -29,6 +29,7 @@ object Diagnostics {
                 .append(" | ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
                 .append('\n')
             sb.append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+                .append(if (manual) " | PULSADO A MANO" else "")
                 .append(" | anuncio detectado: ").append(if (adShowing) "SÍ" else "NO")
                 .append(" | botón encontrado: ").append(if (found != null) describe(found) else "NO")
                 .append("\n\n")
