@@ -7,6 +7,8 @@ object Prefs {
     private const val FILE = "ytskip"
     private const val KEY_SKIPS = "skips"
     private const val KEY_LAST = "last_skip"
+    private const val KEY_YT_SEEN = "yt_seen"
+    private const val KEY_AD_SEEN = "ad_seen"
 
     private fun sp(ctx: Context) = ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -22,4 +24,16 @@ object Prefs {
             .putLong(KEY_LAST, System.currentTimeMillis())
             .apply()
     }
+
+    fun markYoutubeSeen(ctx: Context) = sp(ctx).edit().putLong(KEY_YT_SEEN, System.currentTimeMillis()).apply()
+    fun youtubeSeen(ctx: Context): Long = sp(ctx).getLong(KEY_YT_SEEN, 0L)
+
+    private var lastAdWrite = 0L
+    fun markAdSeen(ctx: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastAdWrite < 2_000) return
+        lastAdWrite = now
+        sp(ctx).edit().putLong(KEY_AD_SEEN, now).apply()
+    }
+    fun adSeen(ctx: Context): Long = sp(ctx).getLong(KEY_AD_SEEN, 0L)
 }

@@ -26,6 +26,8 @@ class SkipAdService : AccessibilityService() {
 
     private var lastSkipAt = 0L
     private var lastDumpAt = 0L
+    private var lastAdDumpAt = 0L
+    private var lastSeenWriteAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -56,6 +58,10 @@ class SkipAdService : AccessibilityService() {
         if (event?.packageName?.toString() != YT_PACKAGE) return
 
         val now = SystemClock.uptimeMillis()
+        if (now - lastSeenWriteAt > 2_000) {
+            lastSeenWriteAt = now
+            Prefs.markYoutubeSeen(this)
+        }
         if (now - lastSkipAt < COOLDOWN_MS) return
 
         for (root in youtubeRoots()) {
@@ -63,9 +69,15 @@ class SkipAdService : AccessibilityService() {
             val adShowing = button != null || isAdShowing(root)
             if (button == null && adShowing) button = findSkipButtonDeep(root)
 
+            if (adShowing) Prefs.markAdSeen(this)
             if (adShowing && now - lastDumpAt > DUMP_INTERVAL_MS) {
                 lastDumpAt = now
-                Diagnostics.save(this, root, button)
+                lastAdDumpAt = now
+                Diagnostics.save(this, root, button, adShowing = true)
+            } else if (!adShowing && now - lastDumpAt > 15_000 && now - lastAdDumpAt > 120_000) {
+                // No ad recognised: still keep a recent snapshot, in case ads look different.
+                lastDumpAt = now
+                Diagnostics.save(this, root, null, adShowing = false)
             }
             if (button != null && press(button)) {
                 lastSkipAt = now

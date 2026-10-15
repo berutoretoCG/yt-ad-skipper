@@ -72,7 +72,7 @@ class MainActivity : Activity() {
             }
         }
         diagButton = Button(this).apply {
-            text = "Compartir diagnóstico del último anuncio"
+            text = "Compartir diagnóstico"
             setOnClickListener { shareDiagnostic() }
         }
         val help = TextView(this).apply {
@@ -125,23 +125,34 @@ class MainActivity : Activity() {
         status.setBackgroundColor(if (on) Color.rgb(46, 125, 50) else Color.rgb(198, 40, 40))
         toggle.text = if (on) "Desactivar" else "Activar (abre Accesibilidad)"
 
-        val last = Prefs.lastSkip(this)
-        val lastText = if (last == 0L) "nunca" else
-            DateUtils.getRelativeTimeSpanString(last, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
-        counter.text = "Anuncios saltados: ${Prefs.skips(this)}\nÚltimo: $lastText"
+        val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "?" }
+        counter.text = "Versión $version\n" +
+            "Anuncios saltados: ${Prefs.skips(this)}\n" +
+            "Último anuncio saltado: ${ago(Prefs.lastSkip(this))}\n" +
+            "Última vez que vio YouTube: ${ago(Prefs.youtubeSeen(this))}\n" +
+            "Último anuncio detectado: ${ago(Prefs.adSeen(this))}"
 
         notifButton.visibility =
             if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) View.VISIBLE else View.GONE
 
-        diagButton.visibility = if (Diagnostics.file(this).exists()) View.VISIBLE else View.GONE
     }
+
+    private fun ago(t: Long): CharSequence = if (t == 0L) "nunca" else
+        DateUtils.getRelativeTimeSpanString(t, System.currentTimeMillis(), DateUtils.SECOND_IN_MILLIS)
 
     /** Sends the saved screen structure as plain text (WhatsApp, Telegram, email, Claude…). */
     private fun shareDiagnostic() {
         val f = Diagnostics.file(this)
-        if (!f.exists()) return
+        if (!f.exists()) {
+            android.widget.Toast.makeText(
+                this,
+                "Aún no hay datos: activa el saltador y abre un vídeo en YouTube",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         val text = f.readText().take(90_000)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
