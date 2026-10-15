@@ -26,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var counter: TextView
     private lateinit var toggle: Button
     private lateinit var notifButton: Button
+    private lateinit var diagButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +71,10 @@ class MainActivity : Activity() {
                 visibility = View.GONE
             }
         }
+        diagButton = Button(this).apply {
+            text = "Compartir diagnóstico del último anuncio"
+            setOnClickListener { shareDiagnostic() }
+        }
         val help = TextView(this).apply {
             textSize = 14f
             setPadding(0, pad, 0, 0)
@@ -97,6 +102,7 @@ class MainActivity : Activity() {
             addView(toggle)
             addView(notifButton)
             addView(tileButton)
+            addView(diagButton)
             addView(help)
         }
         setContentView(ScrollView(this).apply { addView(column) })
@@ -128,6 +134,21 @@ class MainActivity : Activity() {
             if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) View.VISIBLE else View.GONE
+
+        diagButton.visibility = if (Diagnostics.file(this).exists()) View.VISIBLE else View.GONE
+    }
+
+    /** Sends the saved screen structure as plain text (WhatsApp, Telegram, email, Claude…). */
+    private fun shareDiagnostic() {
+        val f = Diagnostics.file(this)
+        if (!f.exists()) return
+        val text = f.readText().take(90_000)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Diagnóstico YT Ad Skipper")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(send, "Compartir diagnóstico"))
     }
 
     private fun requestTile() {

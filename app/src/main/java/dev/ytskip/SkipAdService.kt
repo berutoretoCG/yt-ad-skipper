@@ -11,21 +11,21 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * Listens to the YouTube app's UI and taps "Skip"/"Saltar"/"Omitir" on ads.
+ * Listens to the YouTube app's UI and taps the skip button on ads.
  *
- *  1. Checks every YouTube window (not only the focused one), so it also works
- *     with the mini-player, full screen and overlays.
- *  2. Looks for known skip-button view IDs, then for the button's text using
- *     the system's own text search (fast; no walking the whole screen).
- *  3. Ignores the countdown ("Saltar en 5") and anything that isn't an exact
- *     skip label, so it never taps a video title.
- *  4. Clicks the button itself or a small clickable parent. If that's not
- *     possible, it taps the button's exact position — never the whole player,
- *     which would pause the video.
+ * YouTube now shows an icon-only skip button (⏭) with no visible text, so:
+ *  1. Fast path: known skip-button view IDs, then exact labels via system text search.
+ *  2. If an ad is on screen ("Patrocinado", "Ir al sitio del anunciante"…), a deep
+ *     search looks for ANY node whose view ID contains "skip" or whose
+ *     description starts with a skip word — this catches the icon button.
+ *  3. Countdowns ("Saltar en 5") are ignored.
+ *  4. If an ad is on screen and no button is found, the screen structure is saved
+ *     as a diagnostic the user can share, so the next fix is exact.
  */
 class SkipAdService : AccessibilityService() {
 
     private var lastSkipAt = 0L
+    private var lastDumpAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -59,8 +59,15 @@ class SkipAdService : AccessibilityService() {
         if (now - lastSkipAt < COOLDOWN_MS) return
 
         for (root in youtubeRoots()) {
-            val button = findSkipButton(root) ?: continue
-            if (press(button)) {
+            var button = findSkipButtonFast(root)
+            val adShowing = button != null || isAdShowing(root)
+            if (button == null && adShowing) button = findSkipButtonDeep(root)
+
+            if (adShowing && now - lastDumpAt > DUMP_INTERVAL_MS) {
+                lastDumpAt = now
+                Diagnostics.save(this, root, button)
+            }
+            if (button != null && press(button)) {
                 lastSkipAt = now
                 Prefs.recordSkip(this)
                 StatusUi.showNotification(this)
@@ -70,7 +77,7 @@ class SkipAdService : AccessibilityService() {
         }
     }
 
-    // ---- finding the button --------------------------------------------------
+    // ---- where to look -------------------------------------------------------
 
     private fun youtubeRoots(): List<AccessibilityNodeInfo> {
         val roots = try {
@@ -82,31 +89,59 @@ class SkipAdService : AccessibilityService() {
         return listOfNotNull(rootInActiveWindow?.takeIf { it.packageName?.toString() == YT_PACKAGE })
     }
 
-    private fun findSkipButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private fun isAdShowing(root: AccessibilityNodeInfo): Boolean =
+        AD_MARKERS.any { marker ->
+            root.findAccessibilityNodeInfosByText(marker).any { it.isVisibleToUser }
+        }
+
+    // ---- finding the button --------------------------------------------------
+
+    private fun findSkipButtonFast(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         for (id in SKIP_VIEW_IDS) {
             root.findAccessibilityNodeInfosByViewId("$YT_PACKAGE:id/$id")
-                .firstOrNull { it.isVisibleToUser && !hasDigits(it) }
+                .firstOrNull { it.isVisibleToUser && !subtreeHasDigits(it) }
                 ?.let { return it }
         }
         for (word in SEARCH_WORDS) {
             root.findAccessibilityNodeInfosByText(word)
-                .firstOrNull { it.isVisibleToUser && isSkipLabel(it) }
+                .firstOrNull { it.isVisibleToUser && label(it) in SKIP_LABELS }
                 ?.let { return it }
         }
         return null
+    }
+
+    /** Only runs while an ad is on screen. Prefers clickable matches. */
+    private fun findSkipButtonDeep(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val matches = ArrayList<AccessibilityNodeInfo>()
+        var budget = MAX_NODES
+        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > MAX_DEPTH || budget-- <= 0) return
+            if (n.isVisibleToUser && looksLikeSkip(n)) matches.add(n)
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return matches.firstOrNull { it.isClickable } ?: matches.firstOrNull()
+    }
+
+    private fun looksLikeSkip(n: AccessibilityNodeInfo): Boolean {
+        if (subtreeHasDigits(n)) return false
+        val id = n.viewIdResourceName?.lowercase() ?: ""
+        if ("skip" in id && "preview" !in id) return true
+        val l = label(n) ?: return false
+        if (l.length > 40) return false
+        return l in SKIP_LABELS || SKIP_PREFIXES.any { l.startsWith(it) }
     }
 
     private fun label(node: AccessibilityNodeInfo): String? =
         (node.text?.takeIf { it.isNotBlank() } ?: node.contentDescription)
             ?.toString()?.trim()?.lowercase()
 
-    /** Countdown labels like "Saltar en 5" contain digits — the button isn't ready yet. */
-    private fun hasDigits(node: AccessibilityNodeInfo): Boolean =
-        label(node)?.any { it.isDigit() } == true
-
-    private fun isSkipLabel(node: AccessibilityNodeInfo): Boolean {
-        val l = label(node) ?: return false
-        return l in SKIP_LABELS
+    /** Countdowns like "Saltar en 5" mean the button isn't ready yet. */
+    private fun subtreeHasDigits(n: AccessibilityNodeInfo?, depth: Int = 0): Boolean {
+        if (n == null || depth > 3) return false
+        if (label(n)?.any { it.isDigit() } == true) return true
+        for (i in 0 until n.childCount) if (subtreeHasDigits(n.getChild(i), depth + 1)) return true
+        return false
     }
 
     // ---- pressing it ----------------------------------------------------------
@@ -117,7 +152,7 @@ class SkipAdService : AccessibilityService() {
         var hops = 0
         while (target != null && hops <= 3) {
             if (target.isClickable) {
-                // Only click parents roughly the size of the button, not the whole player.
+                // Only click parents roughly the size of the button, never the whole player.
                 val small = nodeBounds.isEmpty || area(bounds(target)) <= area(nodeBounds) * 6
                 if (small && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
                 break
@@ -147,10 +182,12 @@ class SkipAdService : AccessibilityService() {
             private set
 
         private const val TAG = "YTAdSkipper"
-        private const val YT_PACKAGE = "com.google.android.youtube"
+        const val YT_PACKAGE = "com.google.android.youtube"
         private const val COOLDOWN_MS = 1_500L
+        private const val DUMP_INTERVAL_MS = 4_000L
+        private const val MAX_DEPTH = 60
+        private const val MAX_NODES = 4_000
 
-        /** View IDs YouTube has used for the skip button. They change between versions. */
         private val SKIP_VIEW_IDS = listOf(
             "skip_ad_button",
             "modern_skip_ad_text",
@@ -158,12 +195,16 @@ class SkipAdService : AccessibilityService() {
             "skip_ad_button_container",
         )
 
-        /** Words passed to the system text search (substring, case-insensitive). */
+        /** Visible texts that mean "an ad is playing". */
+        private val AD_MARKERS = listOf(
+            "Patrocinado", "Sponsored", "anunciante", "advertiser",
+            "Sponsorisé", "Gesponsert", "Sponsorizzato",
+        )
+
         private val SEARCH_WORDS = listOf(
             "Saltar", "Omitir", "Skip", "Ignorer", "Überspringen", "Salta", "Pular",
         )
 
-        /** Exact labels (lower-case) accepted as the skip button. */
         private val SKIP_LABELS = setOf(
             "saltar", "saltar anuncio", "saltar anuncios",
             "omitir", "omitir anuncio", "omitir anuncios",
@@ -172,6 +213,11 @@ class SkipAdService : AccessibilityService() {
             "überspringen", "werbung überspringen",
             "salta", "salta annuncio", "salta annunci",
             "pular", "pular anúncio", "pular anúncios",
+        )
+
+        /** Looser match, only used while an ad is on screen. */
+        private val SKIP_PREFIXES = listOf(
+            "saltar", "omitir", "skip", "ignorer", "überspringen", "salta ", "pular",
         )
     }
 }
