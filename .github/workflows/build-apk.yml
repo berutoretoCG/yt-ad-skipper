@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -20,5 +20,5 @@ jobs:
         run: gradle :app:assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: YT-Ad-Skipper-apk
+          name: YT-Ad-Skipper-v${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk

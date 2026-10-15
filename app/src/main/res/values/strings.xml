@@ -2,5 +2,6 @@
 <resources>
     <string name="app_name">YT Ad Skipper</string>
     <string name="service_label">YT Ad Skipper</string>
-    <string name="service_description">Watches the YouTube app only and taps the \"Skip\" button on ads as soon as it appears. It does not read or store anything else.</string>
+    <string name="tile_label">Saltar anuncios</string>
+    <string name="service_description">Vigila solo la app de YouTube y pulsa el botón \"Saltar\" de los anuncios en cuanto aparece. No lee ni guarda nada más.</string>
 </resources>

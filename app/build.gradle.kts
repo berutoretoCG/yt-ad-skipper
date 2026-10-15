@@ -9,10 +9,21 @@ android {
 
     defaultConfig {
         applicationId = "dev.ytskip"
-        minSdk = 24          // gestures (tap fallback) need API 24+
+        minSdk = 24          // gestures, Quick Settings tile and disableSelf need API 24+
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+    }
+
+    // Fixed key committed to the repo, so every APK built by GitHub has the same
+    // signature and new versions install on top of the old one.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
